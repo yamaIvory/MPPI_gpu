@@ -4,107 +4,102 @@ from dynamics_gpu import DynamicsGPU
 
 class MPPIControllerGPU:
     def __init__(self, urdf_path):
-        # GPU 사용 설정
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.dyn = DynamicsGPU(urdf_path, device=self.device)
-        self.nq = self.dyn.n_dof
-
+        
         # ---- Hyperparameters ----
-        self.K = 500            # 샘플 수
-        self.N = 30             # 예측 단계
+        self.K = 600            
+        self.N = 30             
         self.dt = 0.02
-        self.lambda_ = 0.6
-        self.alpha = 0.3
+        self.lambda_ = 0.05     
+        self.alpha = 0.2        
 
-        # Cost Weights (GPU Tensor)
-        self.w_pos = 150.0
-        self.w_rot = 20.0
-        self.w_vel = 0.01
-        self.w_pos_term = 300.0
+        # [Running Cost Weights] - 가는 과정
+        self.w_pos = 100.0
+        self.w_rot = 10.0
+        self.w_vel = 0.01       
+        
+        # [Terminal Cost Weights] - 최종 결과 (중요! 더 높게 설정)
+        self.w_pos_term = 500.0 
         self.w_rot_term = 50.0
 
         # Noise
-        self.sigma = torch.tensor([1.0]*3 + [0.5]*3, device=self.device)
+        self.sigma = torch.tensor([0.8] * 6, device=self.device)
         
-        # Nominal Control (N, 6)
         self.U = torch.zeros((self.N, 6), device=self.device)
-        
-        self.desk_height = 0.0
 
-    def compute_cost_batch(self, ee_pos, ee_rot, P_goal, R_goal, u, is_terminal=False):
-        """
-        Batch Cost Calculation
-        """
+    def _compute_cost(self, ee_pos, ee_rot, P_goal, R_goal, u_t=None, is_terminal=False):
+        """Cost 계산 함수 분리 (재사용을 위해)"""
         # 1. 위치 오차
         pos_err = torch.norm(ee_pos - P_goal, dim=1)**2
-
-        # 2. 회전 오차 (Trace)
+        
+        # 2. 회전 오차
         R_diff = torch.matmul(R_goal.transpose(-1, -2), ee_rot)
         trace = R_diff[:, 0, 0] + R_diff[:, 1, 1] + R_diff[:, 2, 2]
         rot_err = 3.0 - trace
-
-        # 3. 비용 합산
+        
+        # 가중치 선택
         w_p = self.w_pos_term if is_terminal else self.w_pos
         w_r = self.w_rot_term if is_terminal else self.w_rot
         
         cost = w_p * pos_err + w_r * rot_err
         
-        if not is_terminal:
-            ctrl_cost = self.w_vel * torch.sum(u**2, dim=1)
-            cost += ctrl_cost
-
-            # 4. [충돌 체크] 높이 제한 (Vectorized)
-            collision_mask = ee_pos[:, 2] < self.desk_height
-            cost = torch.where(collision_mask, cost + 1e9, cost)
-
+        if not is_terminal and u_t is not None:
+            # 속도 비용 (에너지)
+            cost += self.w_vel * torch.sum(u_t**2, dim=1)
+            
+            # 충돌 비용 (Running cost에서만 체크해도 충분)
+            floor_mask = ee_pos[:, 2] < 0.05 
+            cost = torch.where(floor_mask, cost + 10000.0, cost)
+            
         return cost
 
-    def get_optimal_command(self, q_curr_np, P_goal_np, R_goal_np=None):
-        if R_goal_np is None: R_goal_np = np.eye(3)
-        
-        # Numpy -> Tensor 변환
+    def get_optimal_command(self, q_curr_np, P_goal_np, R_goal_np):
         q_curr = torch.tensor(q_curr_np, device=self.device).float()
-        q_sim = q_curr.unsqueeze(0).repeat(self.K, 1) # (K, n_dof)
+        q_sim = q_curr.unsqueeze(0).repeat(self.K, 1) 
         
         P_goal = torch.tensor(P_goal_np, device=self.device).float().unsqueeze(0)
         R_goal = torch.tensor(R_goal_np, device=self.device).float().unsqueeze(0)
-
-        # 노이즈 생성
-        noise = torch.randn((self.K, self.N, 6), device=self.device) * self.sigma
-        u_samples = self.U.unsqueeze(0) + noise 
         
-        # Input Clipping
-        u_samples[:, :, :3] = torch.clamp(u_samples[:, :, :3], -0.5, 0.5)
-        u_samples[:, :, 3:] = torch.clamp(u_samples[:, :, 3:], -2.0, 2.0)
+        noise = torch.randn((self.K, self.N, 6), device=self.device) * self.sigma
+        u_samples = self.U.unsqueeze(0) + noise
+        #-------!!!!!!!!!!!!안전장치!!!!!!!!!!!!!!!!!!----------------------------
+        limit_vel = 1.0
+        u_samples = torch.clamp(u_samples, -limit_vel, limit_vel)
 
         total_costs = torch.zeros(self.K, device=self.device)
 
-        # Rollout Loop
+        # 1. Running Cost (0 ~ N-1)
         for t in range(self.N):
-            u_t = u_samples[:, t, :] # (K, 6)
-            q_next, ee_pos, ee_rot, _ = self.dyn.step(q_sim, u_t)
+            u_t = u_samples[:, t, :]
+            q_next, ee_pos, ee_rot = self.dyn.step(q_sim, u_t)
             
-            step_c = self.compute_cost_batch(ee_pos, ee_rot, P_goal, R_goal, u_t, is_terminal=False)
-            total_costs += step_c * self.dt
-            q_sim = q_next
+            step_cost = self._compute_cost(ee_pos, ee_rot, P_goal, R_goal, u_t, is_terminal=False)
+            total_costs += step_cost * self.dt
+            
+            q_sim = q_next # 상태 업데이트
 
-        # Terminal Cost
-        term_c = self.compute_cost_batch(ee_pos, ee_rot, P_goal, R_goal, None, is_terminal=True)
-        total_costs += term_c
+        # 2. Terminal Cost (at N) - [여기가 부활했습니다!]
+        # 마지막 q_sim은 N번째 스텝의 관절 각도입니다.
+        # FK를 한 번 더 수행해서 마지막 위치를 확인합니다.
+        tg = self.dyn.chain.forward_kinematics(q_sim)
+        m = tg.get_matrix()
+        term_pos = m[:, :3, 3]
+        term_rot = m[:, :3, :3]
+        
+        term_cost = self._compute_cost(term_pos, term_rot, P_goal, R_goal, None, is_terminal=True)
+        total_costs += term_cost # 마지막에 강력한 한 방 추가!
 
-        # Weight Calculation
+        # 3. Update
         beta = torch.min(total_costs)
         weights = torch.exp(-1.0/self.lambda_ * (total_costs - beta))
-        weights = weights / (torch.sum(weights) + 1e-10)
-
-        # Update Control Sequence
-        delta_u = torch.sum(weights.view(self.K, 1, 1) * noise, dim=0)
-        U_new = self.U + delta_u
-        self.U = (1 - self.alpha) * self.U + self.alpha * U_new
+        weights /= (torch.sum(weights) + 1e-10)
         
-        # Shift & Return
-        u_opt_tensor = self.U[0].clone()
+        delta_u = torch.sum(weights.view(self.K, 1, 1) * noise, dim=0)
+        self.U = (1 - self.alpha) * self.U + self.alpha * (self.U + delta_u)
+        
+        u_ret = self.U[0].clone()
         self.U = torch.roll(self.U, -1, dims=0)
         self.U[-1] = 0.0
-
-        return u_opt_tensor.cpu().numpy()
+        
+        return u_ret.cpu().numpy()
