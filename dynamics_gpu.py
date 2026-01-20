@@ -14,7 +14,7 @@ class DynamicsGPU:
         self.chain = self.chain.to(device=self.device)
         self.n_dof = len(self.chain.get_joint_parameter_names())
         
-        self.dt = 0.02
+        self.dt = 0.05
         
         # 관절 한계 (Gen3 Lite 하드웨어 리밋)
         # 안전을 위해 약간의 마진을 둡니다.

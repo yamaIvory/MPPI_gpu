@@ -87,8 +87,8 @@ class Gen3LiteMPPINodeGPU:
         
         rospy.loginfo(f"🎯 Target set: {target_pos}")
         
-        # 3. 제어 루프 (50Hz)
-        hz = 50
+        # 3. 제어 루프 (20Hz)
+        hz = 20
         rate = rospy.Rate(hz)
         
         while not rospy.is_shutdown():
@@ -99,29 +99,39 @@ class Gen3LiteMPPINodeGPU:
             # [핵심] MPPI 계산 (Joint Velocity 반환)
             dq_rad = self.mppi.get_optimal_command(self.q_curr_full[:6], target_pos, target_rot)
             
-            # Rad/s -> Deg/s 변환
-            dq_deg = np.rad2deg(dq_rad)
             #----------!!!!!!!!안전장치!!!!!!!!!!!--------
-            vel_limit = 30.0
-            dq_deg = np.clip(dq_deg, -vel_limit, vel_limit)
-            
+            vel_limit = 0.01            
+            dq_rad = np.clip(dq_rad, -vel_limit, vel_limit)
+            dq_deg = np.rad2deg(dq_rad)
+            #--------------------------------------------
+
             # 메시지 생성
             msg = Base_JointSpeeds()
             for i in range(6):
                 js = JointSpeed()
                 js.joint_identifier = i
                 js.value = dq_deg[i]
-                js.duration = 20 # 20ms
+                js.duration = 50 # 50ms
                 msg.joint_speeds.append(js)
             self.pub_vel.publish(msg)
             
             # 거리 체크
             with torch.no_grad():
                 q_tensor = torch.tensor(self.q_curr_full[:6], device=self.device).float().unsqueeze(0)
-                curr_ee = self.mppi.dyn.chain.forward_kinematics(q_tensor).get_matrix()[0, :3, 3].cpu().numpy()
-                dist = np.linalg.norm(curr_ee - target_pos)
+                tg = self.mppi.dyn.chain.forward_kinematics(q_tensor)
+                m = tg.get_matrix()[0].cpu().numpy() # (4, 4) 행렬
                 
-            if dist < 0.02:
+                curr_pos = m[:3, 3]
+                curr_rot = m[:3, :3]
+                
+                # (1) 위치 오차
+                pos_err = np.linalg.norm(curr_pos - target_pos)
+                
+                # (2) 회전 오차 (Trace Trick: 0~3.0)
+                R_diff = np.matmul(target_rot.T, curr_rot)
+                rot_err = 3.0 - np.trace(R_diff)
+                
+            if pos_err < 0.02 and rot_err < 0.1:
                 rospy.loginfo("✅ Target Reached!")
                 self.stop()
                 break

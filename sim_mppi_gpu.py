@@ -62,9 +62,9 @@ def run_simulation():
     start_P = data.oMf[ee_id].translation
     start_R = data.oMf[ee_id].rotation
     
-    # 목표: 현재 위치에서 Z축으로 +15cm, Y축으로 -10cm
+    # 목표: 현재 위치에서 Z축으로 +10cm
     target_P = start_P.copy()   
-    target_P[2] += 0.15 
+    target_P[2] += 0.1
     target_R = start_R.copy() # 회전은 유지
 
     # 5. 시각화 객체 (빨간 공 = 목표, 파란 공 = 현재 손)
@@ -87,7 +87,7 @@ def run_simulation():
     time.sleep(1.0) # 잠시 대기
 
     try:
-        dt = 0.02 # 50Hz
+        dt = 0.05 # 20Hz
         for step in range(1000):
             loop_start = time.time()
             
