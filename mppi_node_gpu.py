@@ -52,8 +52,19 @@ class Gen3LiteMPPINodeGPU:
 
     def cb_feedback(self, msg):
         # Gen3 Lite는 6축
-        q = [np.deg2rad(msg.actuators[i].position) for i in range(6)]
-        self.q_curr_full = np.array(q + [0]*4) # 10차원 패딩 (그리퍼 등)
+        raw_q = []
+        for i in range(6):
+            # 1. 도(Degree) -> 라디안(Radian) 변환
+            angle_rad = np.deg2rad(msg.actuators[i].position)
+            
+            # 2. 각도 정규화: [-pi, +pi] 범위로 변환
+            # (공식: (angle + pi) % 2pi - pi)
+            angle_norm = (angle_rad + np.pi) % (2 * np.pi) - np.pi
+            
+            raw_q.append(angle_norm)
+            
+        # 10차원 패딩 (그리퍼 포함)
+        self.q_curr_full = np.array(raw_q + [0]*4) 
         self.is_ready = True
 
     def stop(self):
@@ -74,17 +85,29 @@ class Gen3LiteMPPINodeGPU:
         
         rospy.loginfo("⌛ Waiting for robot feedback...")
         while not self.is_ready: rospy.sleep(0.1)
+
+        # [추가됨] 시작 시 초기 관절 값 출력 ---------------------------------------
+        start_joints_rad = self.q_curr_full[:6]
+        start_joints_deg = np.rad2deg(start_joints_rad)
         
-        # 2. 목표 설정 (현재 위치에서 Z축 +15cm)
+        print("\n" + "="*60)
+        print(f"🤖 [Start] Robot Initial Joint States:")
+        print(f"   🔹 Radian: {np.round(start_joints_rad, 4)}")
+        print(f"   🔹 Degree: {np.round(start_joints_deg, 2)}")
+        print("="*60 + "\n")
+        # ----------------------------------------------------------------------
+        
+        # 2. 목표 설정 (현재 위치에서 Z축 +10cm)
         with torch.no_grad():
             q_t = torch.tensor(self.q_curr_full[:6], device=self.device).float().unsqueeze(0)
             tg = self.mppi.dyn.chain.forward_kinematics(q_t)
             curr_pos = tg.get_matrix()[0, :3, 3].cpu().numpy()
             
         target_pos = curr_pos.copy()
-        target_pos[2] += 0.15 # 15cm 위로
+        target_pos[2] += 0.05 # 10cm 위로
         target_rot = np.eye(3) # 회전은 유지 (Identity)
-        
+ 
+        rospy.loginfo(f" current pos: {curr_pos}")       
         rospy.loginfo(f"🎯 Target set: {target_pos}")
         
         # 3. 제어 루프 (20Hz)
@@ -111,7 +134,7 @@ class Gen3LiteMPPINodeGPU:
                 js = JointSpeed()
                 js.joint_identifier = i
                 js.value = dq_deg[i]
-                js.duration = 50 # 50ms
+                js.duration = 0 # 50ms
                 msg.joint_speeds.append(js)
             self.pub_vel.publish(msg)
             
@@ -123,7 +146,7 @@ class Gen3LiteMPPINodeGPU:
                 
                 curr_pos = m[:3, 3]
                 curr_rot = m[:3, :3]
-                
+                rospy.loginfo(f" current pos: {curr_pos}")
                 # (1) 위치 오차
                 pos_err = np.linalg.norm(curr_pos - target_pos)
                 
@@ -138,7 +161,7 @@ class Gen3LiteMPPINodeGPU:
                 
             # 연산 시간 체크 (디버깅용)
             calc_time = rospy.get_time() - start_t
-            if calc_time > 0.025:
+            if calc_time > 0.05:
                 rospy.logwarn(f"Slow loop: {calc_time:.4f}s")
                 
             rate.sleep()
