@@ -12,16 +12,16 @@ class MPPIControllerGPU:
         self.N = 10             # 20
         self.dt = 0.05          # 0.05
         self.lambda_ = 0.1      # 0.1
-        self.alpha = 0.2        # 0.2
+        self.alpha = 0.1        # 0.2
 
         # [Running Cost Weights] - 가는 과정
-        self.w_pos = 1000.0    # 100
+        self.w_pos = 100.0    # 100
         self.w_rot = 10.0     # 10
         self.w_vel = 0.1      # 0.1
         
         # [Terminal Cost Weights] - 최종 결과 (중요! 더 높게 설정)
-        self.w_pos_term = 5000.0 
-        self.w_rot_term = 50.0
+        self.w_pos_term = 2000.0 
+        self.w_rot_term = 200.0
 
         # Noise
         self.sigma = torch.tensor([0.01] * 6, device=self.device)  # 0.3
