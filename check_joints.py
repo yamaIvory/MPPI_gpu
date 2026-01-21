@@ -90,7 +90,7 @@ def test_joints():
             js = JointSpeed()
             js.joint_identifier = i
             js.value = 0.0
-            msg.joint_speeds.append(js)
+            stop_msg.joint_speeds.append(js)
         pub.publish(stop_msg)
 
 if __name__ == "__main__":
