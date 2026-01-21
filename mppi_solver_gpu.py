@@ -9,7 +9,7 @@ class MPPIControllerGPU:
         
         # ---- Hyperparameters ----
         self.K = 400            # 400
-        self.N = 20             # 20
+        self.N = 10             # 20
         self.dt = 0.05          # 0.05
         self.lambda_ = 0.1      # 0.1
         self.alpha = 0.2        # 0.2
