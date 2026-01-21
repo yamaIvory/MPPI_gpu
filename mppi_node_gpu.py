@@ -101,14 +101,17 @@ class Gen3LiteMPPINodeGPU:
         with torch.no_grad():
             q_t = torch.tensor(self.q_curr_full[:6], device=self.device).float().unsqueeze(0)
             tg = self.mppi.dyn.chain.forward_kinematics(q_t)
-            curr_pos = tg.get_matrix()[0, :3, 3].cpu().numpy()
+            m = tg.get_matrix()[0].cpu().numpy()
+            
+            curr_pos = m[:3, 3]
+            curr_rot = m[:3, :3] # 현재 회전 행렬 가져오기
             
         target_pos = curr_pos.copy()
-        target_pos[2] += 0.05 # 10cm 위로
-        target_rot = np.eye(3) # 회전은 유지 (Identity)
+        target_pos[2] += 0.15 # 15cm 위로
+        target_rot = curr_rot.copy()
  
-        rospy.loginfo(f" current pos: {curr_pos}")       
-        rospy.loginfo(f"🎯 Target set: {target_pos}")
+        rospy.loginfo(f"📍 Start Pos : {np.round(curr_pos, 4)}")           
+        rospy.loginfo(f"🎯 Target Pos: {np.round(target_pos, 4)}")
         
         # 3. 제어 루프 (20Hz)
         hz = 20
@@ -146,7 +149,8 @@ class Gen3LiteMPPINodeGPU:
                 
                 curr_pos = m[:3, 3]
                 curr_rot = m[:3, :3]
-                rospy.loginfo(f" current pos: {curr_pos}")
+
+
                 # (1) 위치 오차
                 pos_err = np.linalg.norm(curr_pos - target_pos)
                 
@@ -154,6 +158,11 @@ class Gen3LiteMPPINodeGPU:
                 R_diff = np.matmul(target_rot.T, curr_rot)
                 rot_err = 3.0 - np.trace(R_diff)
                 
+                rospy.loginfo(
+                    f"📏 P.Err:{pos_err:.4f}m | "
+                    f"🔄 R.Err:{rot_err:.4f}"
+                )
+
             if pos_err < 0.02 and rot_err < 0.1:
                 rospy.loginfo("✅ Target Reached!")
                 self.stop()
